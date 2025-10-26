@@ -1,8 +1,8 @@
 // This work is licensed under a Attribution-NonCommercial-ShareAlike 4.0 International (CC BY-NC-SA 4.0) https://creativecommons.org/licenses/by-nc-sa/4.0/
 // © LuxAlgo
 
-//@version=5
-indicator('Smart Money Concepts [LuxAlgo]', 'LuxAlgo - Smart Money Concepts', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+//@version=6
+indicator('Smart Money Concepts [LuxAlgo]', 'LuxAlgo SMC', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 //---------------------------------------------------------------------------------------------------------------------}
 //CONSTANTS & STRINGS & INPUTS
 //---------------------------------------------------------------------------------------------------------------------{
@@ -40,7 +40,7 @@ CLOSE                           = 'Close'
 HIGHLOW                         = 'High/Low'
 
 SOLID                           = '⎯⎯⎯'
-DASHED                          = '----'
+DASHED                          = ''
 DOTTED                          = '····'
 
 SMART_GROUP                     = 'Smart Money Concepts'
@@ -84,6 +84,10 @@ showInternalBearInput           = input.string( ALL,        'Bearish Structure' 
 internalBearColorInput          = input(        RED,        '',                         group = INTERNAL_GROUP, inline = 'ibear')
 internalFilterConfluenceInput   = input(        false,      'Confluence Filter',        group = INTERNAL_GROUP, tooltip = internalFilterConfluenceTooltip)
 internalStructureSize           = input.string( TINY,       'Internal Label Size',      group = INTERNAL_GROUP, options = [TINY,SMALL,NORMAL])
+showInternalSwingsInput         = input(        false,      'Show Internal Swings Points',  group = INTERNAL_GROUP, tooltip = 'Display internal swing point labels on the chart', inline = 'intswings')
+internalSwingsLengthInput       = input.int(    10,         '',                             group = INTERNAL_GROUP, minval = 5,                      inline = 'intswings')
+showInternalLinesInput          = input(        false,      'Show Internal Lines',          group = INTERNAL_GROUP, tooltip = 'Draw lines connecting internal structure points')
+showInternalRectanglesInput     = input(        false,      'Show Internal Rectangles',     group = INTERNAL_GROUP, tooltip = 'Draw rectangles from candle to candle on internal structure')
 
 showStructureInput              = input(        true,       'Show Swing Structure',     group = SWING_GROUP,    tooltip = showStructureTooltip)
 showSwingBullInput              = input.string( ALL,        'Bullish Structure',        group = SWING_GROUP,    inline = 'bull',    options = [ALL,BOS,CHOCH])
@@ -243,6 +247,14 @@ var pivot swingLow                  = pivot.new(na,na,false)
 var pivot internalHigh              = pivot.new(na,na,false)
 // @variable                        current internal pivot low
 var pivot internalLow               = pivot.new(na,na,false)
+// @variable                        previous internal high for line drawing
+var pivot prevInternalHigh          = pivot.new(na,na,false)
+// @variable                        previous internal low for line drawing  
+var pivot prevInternalLow           = pivot.new(na,na,false)
+// @variable                        storage for internal structure lines
+var array<line> internalLines       = array.new<line>()
+// @variable                        storage for internal structure rectangles
+var array<box> internalRectangles   = array.new<box>()
 // @variable                        current equal high pivot
 var pivot equalHigh                 = pivot.new(na,na,false)
 // @variable                        current equal low pivot
@@ -367,13 +379,35 @@ startOfBullishLeg(int leg)  => ta.change(leg) == +1
 // @param labelColor    text color
 // @param labelStyle    label style
 // @returns             label ID
-drawLabel(int labelTime, float labelPrice, string tag, color labelColor, string labelStyle) =>    
+drawLabel(int labelTime, float labelPrice, string tag, color labelColor, string labelStyle, string labelSize = size.small) =>    
     var label l_abel = na
 
     if modeInput == PRESENT
         l_abel.delete()
 
-    l_abel := label.new(chart.point.new(labelTime,na,labelPrice),tag,xloc.bar_time,color=color(na),textcolor=labelColor,style = labelStyle,size = size.small)
+    l_abel := label.new(chart.point.new(labelTime,na,labelPrice),tag,xloc.bar_time,color=color(na),textcolor=labelColor,style = labelStyle,size = labelSize)
+
+// @function draw line connecting internal swing points
+drawInternalLine(int fromTime, float fromPrice, int toTime, float toPrice, color lineColor) =>
+    if showInternalLinesInput
+        internalLine = line.new(x1=fromTime, y1=fromPrice, x2=toTime, y2=toPrice, xloc=xloc.bar_time, color=lineColor, style=line.style_dashed, width=1)
+        if modeInput == PRESENT and internalLines.size() > 50
+            oldLine = internalLines.pop()
+            oldLine.delete()
+        internalLines.unshift(internalLine)
+        internalLine
+
+// @function draw rectangle from candle to candle for internal structure
+drawInternalRectangle(int fromTime, float fromHigh, float fromLow, int toTime, float toHigh, float toLow, color boxColor, bool isHigh) =>
+    if showInternalRectanglesInput
+        topPrice = isHigh ? math.max(fromHigh, toHigh) : math.max(fromHigh, toHigh)  
+        bottomPrice = isHigh ? math.min(fromHigh, toHigh) : math.min(fromLow, toLow)
+        internalRect = box.new(left=fromTime, top=topPrice, right=toTime, bottom=bottomPrice, xloc=xloc.bar_time, border_color=boxColor, bgcolor=color.new(boxColor, 85), border_width=1, border_style=line.style_dashed)
+        if modeInput == PRESENT and internalRectangles.size() > 20
+            oldRect = internalRectangles.pop()
+            oldRect.delete()
+        internalRectangles.unshift(internalRect)
+        internalRect
 
 // @function            create a new line and label representing an EQH or EQL
 // @param p_ivot        starting pivot
@@ -433,7 +467,18 @@ getCurrentStructure(int size,bool equalHighLow = false, bool internal = false) =
                 trailing.lastBottomTime := p_ivot.barTime
 
             if showSwingsInput and not internal and not equalHighLow
-                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', swingBullishColor, label.style_label_up)            
+                drawLabel(time[size], p_ivot.currentLevel - 1, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', swingBullishColor, label.style_label_up, size.normal)            
+            if showInternalSwingsInput and internal and not equalHighLow
+                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', styleInput == MONOCHROME ? MONO_BULLISH : internalBullColorInput, label.style_label_up, size.tiny)
+                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', swingBullishColor, label.style_label_up, size.tiny)
+                // Draw line and rectangle for internal lows
+                if not na(prevInternalLow.currentLevel)
+                    drawInternalLine(prevInternalLow.barTime, prevInternalLow.currentLevel, time[size], p_ivot.currentLevel, swingBullishColor)
+                    drawInternalRectangle(prevInternalLow.barTime, high[bar_index - prevInternalLow.barIndex], prevInternalLow.currentLevel, time[size], high[size], p_ivot.currentLevel, swingBullishColor, false)
+                // Update previous internal low
+                prevInternalLow.currentLevel := p_ivot.currentLevel
+                prevInternalLow.barTime := time[size]
+                prevInternalLow.barIndex := bar_index[size]            
         else
             pivot p_ivot = equalHighLow ? equalHigh : internal ? internalHigh : swingHigh
 
@@ -454,7 +499,20 @@ getCurrentStructure(int size,bool equalHighLow = false, bool internal = false) =
                 trailing.lastTopTime    := p_ivot.barTime
 
             if showSwingsInput and not internal and not equalHighLow
-                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', swingBearishColor, label.style_label_down)
+                drawLabel(time[size], p_ivot.currentLevel + 1, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', swingBearishColor, label.style_label_down, size.normal)
+            if showInternalSwingsInput and internal and not equalHighLow
+                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', styleInput == MONOCHROME ? MONO_BULLISH : internalBullColorInput, label.style_label_up, size.tiny)
+                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', swingBearishColor, label.style_label_down, size.tiny)
+                if showInternalSwingsInput and internal and not equalHighLow
+                    drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', styleInput == MONOCHROME ? MONO_BEARISH : internalBearColorInput, label.style_label_down, size.tiny)
+                    // Draw line and rectangle for internal highs
+                    if not na(prevInternalHigh.currentLevel)
+                        drawInternalLine(prevInternalHigh.barTime, prevInternalHigh.currentLevel, time[size], p_ivot.currentLevel, swingBearishColor)
+                        drawInternalRectangle(prevInternalHigh.barTime, prevInternalHigh.currentLevel, low[bar_index - prevInternalHigh.barIndex], time[size], p_ivot.currentLevel, low[size], swingBearishColor, true)
+                    // Update previous internal high
+                    prevInternalHigh.currentLevel := p_ivot.currentLevel
+                    prevInternalHigh.barTime := time[size]
+                    prevInternalHigh.barIndex := bar_index[size]
                 
 // @function                draw line and label representing a structure
 // @param p_ivot            base pivot point
@@ -780,7 +838,7 @@ if showFairValueGapsInput
     deleteFairValueGaps()
 
 getCurrentStructure(swingsLengthInput,false)
-getCurrentStructure(5,false,true)
+getCurrentStructure(internalSwingsLengthInput,false,true)
 
 if showEqualHighsLowsInput
     getCurrentStructure(equalHighsLowsLengthInput,true)
