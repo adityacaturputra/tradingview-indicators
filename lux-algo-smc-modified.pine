@@ -2,7 +2,7 @@
 // © LuxAlgo
 
 //@version=6
-indicator('Smart Money Concepts [LuxAlgo]', 'LuxAlgo SMC', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
+indicator('Smart Money Concepts [LuxAlgo]', 'LuxAlgoSMC', overlay = true, max_labels_count = 500, max_lines_count = 500, max_boxes_count = 500)
 //---------------------------------------------------------------------------------------------------------------------}
 //CONSTANTS & STRINGS & INPUTS
 //---------------------------------------------------------------------------------------------------------------------{
@@ -138,8 +138,25 @@ equilibriumZoneColorInput       = input.color(  GRAY,       'Equilibrium Zone', 
 discountZoneColorInput          = input.color(  GREEN,      'Discount Zone',            group = ZONES_GROUP)
 
 //---------------------------------------------------------------------------------------------------------------------}
-//DATA STRUCTURES & VARIABLES
+//INPUT VALIDATION
 //---------------------------------------------------------------------------------------------------------------------{
+// Validate critical input parameters
+if swingsLengthInput < 5
+    runtime.error("Swing length must be at least 5 bars")
+if internalSwingsLengthInput < 5
+    runtime.error("Internal swing length must be at least 5 bars")
+if equalHighsLowsLengthInput < 1
+    runtime.error("Equal highs/lows confirmation length must be at least 1 bar")
+if internalOrderBlocksSizeInput < 1 or internalOrderBlocksSizeInput > 20
+    runtime.error("Internal order blocks size must be between 1 and 20")
+if swingOrderBlocksSizeInput < 1 or swingOrderBlocksSizeInput > 20
+    runtime.error("Swing order blocks size must be between 1 and 20")
+if equalHighsLowsThresholdInput < 0 or equalHighsLowsThresholdInput > 0.5
+    runtime.error("Equal highs/lows threshold must be between 0 and 0.5")
+if fairValueGapsExtendInput < 0
+    runtime.error("Fair value gaps extend must be 0 or greater")
+
+//---------------------------------------------------------------------------------------------------------------------}
 // @type                            UDT representing alerts as bool fields
 // @field internalBullishBOS        internal structure custom alert
 // @field internalBearishBOS        internal structure custom alert
@@ -212,8 +229,8 @@ type trend
 // @field l_ine                     displayed line
 // @field l_abel                    displayed label
 type equalDisplay
-    line l_ine      = na
-    label l_abel    = na
+    line l_ine
+    label l_abel
 
 // @type                            UDT representing a pivot point (swing point) 
 // @field currentLevel              current price level
@@ -240,25 +257,25 @@ type orderBlock
     int bias
 
 // @variable                        current swing pivot high    
-var pivot swingHigh                 = pivot.new(na,na,false)
+var pivot swingHigh                 = pivot.new(0.0,0.0,false)
 // @variable                        current swing pivot low
-var pivot swingLow                  = pivot.new(na,na,false)
+var pivot swingLow                  = pivot.new(0.0,0.0,false)
 // @variable                        current internal pivot high
-var pivot internalHigh              = pivot.new(na,na,false)
+var pivot internalHigh              = pivot.new(0.0,0.0,false)
 // @variable                        current internal pivot low
-var pivot internalLow               = pivot.new(na,na,false)
+var pivot internalLow               = pivot.new(0.0,0.0,false)
 // @variable                        previous internal high for line drawing
-var pivot prevInternalHigh          = pivot.new(na,na,false)
+var pivot prevInternalHigh          = pivot.new(0.0,0.0,false)
 // @variable                        previous internal low for line drawing  
-var pivot prevInternalLow           = pivot.new(na,na,false)
+var pivot prevInternalLow           = pivot.new(0.0,0.0,false)
 // @variable                        storage for internal structure lines
 var array<line> internalLines       = array.new<line>()
 // @variable                        storage for internal structure rectangles
 var array<box> internalRectangles   = array.new<box>()
 // @variable                        current equal high pivot
-var pivot equalHigh                 = pivot.new(na,na,false)
+var pivot equalHigh                 = pivot.new(0.0,0.0,false)
 // @variable                        current equal low pivot
-var pivot equalLow                  = pivot.new(na,na,false)
+var pivot equalLow                  = pivot.new(0.0,0.0,false)
 // @variable                        swing trend bias
 var trend swingTrend                = trend.new(0)
 // @variable                        internal trend bias
@@ -310,14 +327,37 @@ alerts currentAlerts                = alerts.new()
 // @variable                        time at start of chart
 var initialTime                     = time
 
-// we create the needed boxes for displaying order blocks at the first execution
-if barstate.isfirst
-    if showSwingOrderBlocksInput
-        for index = 1 to swingOrderBlocksSizeInput
-            swingOrderBlocksBoxes.push(box.new(na,na,na,na,xloc = xloc.bar_time,extend = extend.right))
-    if showInternalOrderBlocksInput
-        for index = 1 to internalOrderBlocksSizeInput
-            internalOrderBlocksBoxes.push(box.new(na,na,na,na,xloc = xloc.bar_time,extend = extend.right))
+// @function            safe array get with bounds checking
+// @param arr           array to get value from
+// @param index         index to get
+// @returns             value at index or na if out of bounds
+safeArrayGet(array<float> arr, index) =>
+    if index >= 0 and index < arr.size()
+        arr.get(index)
+    else
+        na
+
+// @function            safe array slice with bounds checking
+// @param arr           array to slice
+// @param from          start index
+// @param toIndex       end index
+// @returns             sliced array or empty array if invalid bounds
+safeArraySlice(array<float> arr, from, toIndex) =>
+    if from >= 0 and toIndex <= arr.size() and from <= toIndex
+        arr.slice(from, toIndex)
+    else
+        array.new<float>()
+
+// @function            create order block boxes on-demand
+// @param internal      true for internal order blocks
+// @returns             void
+createOrderBlockBoxes(bool internal = false) =>
+    array<box> boxes = internal ? internalOrderBlocksBoxes : swingOrderBlocksBoxes
+    requiredSize = internal ? internalOrderBlocksSizeInput : swingOrderBlocksSizeInput
+    
+    if boxes.size() < requiredSize
+        for index = boxes.size() to requiredSize - 1
+            boxes.push(box.new(na,na,na,na,xloc = xloc.bar_time,extend = extend.right))
 
 // @variable                        source to use in bearish order blocks mitigation
 bearishOrderBlockMitigationSource   = orderBlockMitigationInput == CLOSE ? close : high
@@ -379,8 +419,8 @@ startOfBullishLeg(int leg)  => ta.change(leg) == +1
 // @param labelColor    text color
 // @param labelStyle    label style
 // @returns             label ID
-drawLabel(int labelTime, float labelPrice, string tag, color labelColor, string labelStyle, string labelSize = size.small) =>    
-    var label l_abel = na
+drawLabel(int labelTime, float labelPrice, string tag, color labelColor, string labelStyle, string labelSize) =>    
+    var label l_abel = label.new(na,na)
 
     if modeInput == PRESENT
         l_abel.delete()
@@ -400,8 +440,8 @@ drawInternalLine(int fromTime, float fromPrice, int toTime, float toPrice, color
 // @function draw rectangle from candle to candle for internal structure
 drawInternalRectangle(int fromTime, float fromHigh, float fromLow, int toTime, float toHigh, float toLow, color boxColor, bool isHigh) =>
     if showInternalRectanglesInput
-        topPrice = isHigh ? math.max(fromHigh, toHigh) : math.max(fromHigh, toHigh)  
-        bottomPrice = isHigh ? math.min(fromHigh, toHigh) : math.min(fromLow, toLow)
+        topPrice = math.max(fromHigh, toHigh)
+        bottomPrice = math.min(fromLow, toLow)
         internalRect = box.new(left=fromTime, top=topPrice, right=toTime, bottom=bottomPrice, xloc=xloc.bar_time, border_color=boxColor, bgcolor=color.new(boxColor, 85), border_width=1, border_style=line.style_dashed)
         if modeInput == PRESENT and internalRectangles.size() > 20
             oldRect = internalRectangles.pop()
@@ -470,7 +510,6 @@ getCurrentStructure(int size,bool equalHighLow = false, bool internal = false) =
                 drawLabel(time[size], p_ivot.currentLevel - 1, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', swingBullishColor, label.style_label_up, size.normal)            
             if showInternalSwingsInput and internal and not equalHighLow
                 drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', styleInput == MONOCHROME ? MONO_BULLISH : internalBullColorInput, label.style_label_up, size.tiny)
-                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', swingBullishColor, label.style_label_up, size.tiny)
                 // Draw line and rectangle for internal lows
                 if not na(prevInternalLow.currentLevel)
                     drawInternalLine(prevInternalLow.barTime, prevInternalLow.currentLevel, time[size], p_ivot.currentLevel, swingBullishColor)
@@ -501,18 +540,15 @@ getCurrentStructure(int size,bool equalHighLow = false, bool internal = false) =
             if showSwingsInput and not internal and not equalHighLow
                 drawLabel(time[size], p_ivot.currentLevel + 1, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', swingBearishColor, label.style_label_down, size.normal)
             if showInternalSwingsInput and internal and not equalHighLow
-                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel < p_ivot.lastLevel ? 'LL' : 'HL', styleInput == MONOCHROME ? MONO_BULLISH : internalBullColorInput, label.style_label_up, size.tiny)
-                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', swingBearishColor, label.style_label_down, size.tiny)
-                if showInternalSwingsInput and internal and not equalHighLow
-                    drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', styleInput == MONOCHROME ? MONO_BEARISH : internalBearColorInput, label.style_label_down, size.tiny)
-                    // Draw line and rectangle for internal highs
-                    if not na(prevInternalHigh.currentLevel)
-                        drawInternalLine(prevInternalHigh.barTime, prevInternalHigh.currentLevel, time[size], p_ivot.currentLevel, swingBearishColor)
-                        drawInternalRectangle(prevInternalHigh.barTime, prevInternalHigh.currentLevel, low[bar_index - prevInternalHigh.barIndex], time[size], p_ivot.currentLevel, low[size], swingBearishColor, true)
-                    // Update previous internal high
-                    prevInternalHigh.currentLevel := p_ivot.currentLevel
-                    prevInternalHigh.barTime := time[size]
-                    prevInternalHigh.barIndex := bar_index[size]
+                drawLabel(time[size], p_ivot.currentLevel, p_ivot.currentLevel > p_ivot.lastLevel ? 'HH' : 'LH', styleInput == MONOCHROME ? MONO_BEARISH : internalBearColorInput, label.style_label_down, size.tiny)
+                // Draw line and rectangle for internal highs
+                if not na(prevInternalHigh.currentLevel)
+                    drawInternalLine(prevInternalHigh.barTime, prevInternalHigh.currentLevel, time[size], p_ivot.currentLevel, swingBearishColor)
+                    drawInternalRectangle(prevInternalHigh.barTime, prevInternalHigh.currentLevel, low[bar_index - prevInternalHigh.barIndex], time[size], p_ivot.currentLevel, low[size], swingBearishColor, true)
+                // Update previous internal high
+                prevInternalHigh.currentLevel := p_ivot.currentLevel
+                prevInternalHigh.barTime := time[size]
+                prevInternalHigh.barIndex := bar_index[size]
                 
 // @function                draw line and label representing a structure
 // @param p_ivot            base pivot point
@@ -565,27 +601,33 @@ deleteOrderBlocks(bool internal = false) =>
 storeOrdeBlock(pivot p_ivot,bool internal = false,int bias) =>
     if (not internal and showSwingOrderBlocksInput) or (internal and showInternalOrderBlocksInput)
 
-        array<float> a_rray = na
-        int parsedIndex = na
+        array<float> a_rray = array.new<float>()
+        parsedIndex = 0
 
         if bias == BEARISH
-            a_rray      := parsedHighs.slice(p_ivot.barIndex,bar_index)
-            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.max())  
+            a_rray      := safeArraySlice(parsedHighs, p_ivot.barIndex, bar_index)
+            if a_rray.size() > 0
+                parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.max())  
         else
-            a_rray      := parsedLows.slice(p_ivot.barIndex,bar_index)
-            parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.min())                        
+            a_rray      := safeArraySlice(parsedLows, p_ivot.barIndex, bar_index)
+            if a_rray.size() > 0
+                parsedIndex := p_ivot.barIndex + a_rray.indexof(a_rray.min())                        
 
-        orderBlock o_rderBlock          = orderBlock.new(parsedHighs.get(parsedIndex), parsedLows.get(parsedIndex), times.get(parsedIndex),bias)
-        array<orderBlock> orderBlocks   = internal ? internalOrderBlocks : swingOrderBlocks
-        
-        if orderBlocks.size() >= 100
-            orderBlocks.pop()
-        orderBlocks.unshift(o_rderBlock)
+        if not na(parsedIndex) and parsedIndex < parsedHighs.size() and parsedIndex < parsedLows.size() and parsedIndex < times.size()
+            orderBlock o_rderBlock          = orderBlock.new(safeArrayGet(parsedHighs, parsedIndex), safeArrayGet(parsedLows, parsedIndex), times.get(parsedIndex),bias)
+            array<orderBlock> orderBlocks   = internal ? internalOrderBlocks : swingOrderBlocks
+            
+            if orderBlocks.size() >= 100
+                orderBlocks.pop()
+            orderBlocks.unshift(o_rderBlock)
 
 // @function            draw order blocks as boxes
 // @param internal      true for internal order blocks
 // @returns             void
 drawOrderBlocks(bool internal = false) =>        
+    // Create boxes on-demand if needed
+    createOrderBlockBoxes(internal)
+    
     array<orderBlock> orderBlocks = internal ? internalOrderBlocks : swingOrderBlocks
     orderBlocksSize = orderBlocks.size()
 
@@ -734,15 +776,16 @@ drawLevels(string timeframe, bool sameTimeframe, string style, color levelColor)
     int parsedBottomTime    = time
 
     if not sameTimeframe
-        int leftIndex               = times.binary_search_rightmost(parsedLeftTime)
-        int rightIndex              = times.binary_search_rightmost(parsedRightTime)
+        leftIndex               = times.binary_search_rightmost(parsedLeftTime)
+        rightIndex              = times.binary_search_rightmost(parsedRightTime)
 
-        array<int> timeArray        = times.slice(leftIndex,rightIndex)
-        array<float> topArray       = highs.slice(leftIndex,rightIndex)
-        array<float> bottomArray    = lows.slice(leftIndex,rightIndex)
+        if leftIndex >= 0 and rightIndex >= 0 and leftIndex < times.size() and rightIndex < times.size()
+            array<int> timeArray        = times.slice(leftIndex,rightIndex)
+            array<float> topArray       = highs.slice(leftIndex,rightIndex)
+            array<float> bottomArray    = lows.slice(leftIndex,rightIndex)
 
-        parsedTopTime               := timeArray.size() > 0 ? timeArray.get(topArray.indexof(topArray.max())) : initialTime
-        parsedBottomTime            := timeArray.size() > 0 ? timeArray.get(bottomArray.indexof(bottomArray.min())) : initialTime
+            parsedTopTime               := timeArray.size() > 0 ? timeArray.get(topArray.indexof(topArray.max())) : initialTime
+            parsedBottomTime            := timeArray.size() > 0 ? timeArray.get(bottomArray.indexof(bottomArray.min())) : initialTime
 
     var line topLine        = line.new(na, na, na, na, xloc = xloc.bar_time, color = levelColor, style = getStyle(style))
     var line bottomLine     = line.new(na, na, na, na, xloc = xloc.bar_time, color = levelColor, style = getStyle(style))
@@ -887,8 +930,8 @@ alertcondition(currentAlerts.internalBullishCHoCH,      'Internal Bullish CHoCH'
 alertcondition(currentAlerts.internalBearishBOS,        'Internal Bearish BOS',         'Internal Bearish BOS formed')
 alertcondition(currentAlerts.internalBearishCHoCH,      'Internal Bearish CHoCH',       'Internal Bearish CHoCH formed')
 
-alertcondition(currentAlerts.swingBullishBOS,           'Bullish BOS',                  'Internal Bullish BOS formed')
-alertcondition(currentAlerts.swingBullishCHoCH,         'Bullish CHoCH',                'Internal Bullish CHoCH formed')
+alertcondition(currentAlerts.swingBullishBOS,           'Bullish BOS',                  'Swing Bullish BOS formed')
+alertcondition(currentAlerts.swingBullishCHoCH,         'Bullish CHoCH',                'Swing Bullish CHoCH formed')
 alertcondition(currentAlerts.swingBearishBOS,           'Bearish BOS',                  'Bearish BOS formed')
 alertcondition(currentAlerts.swingBearishCHoCH,         'Bearish CHoCH',                'Bearish CHoCH formed')
 
